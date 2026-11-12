@@ -1,17 +1,20 @@
 % !TeX program = xelatex
 % Compile: tectonic django_migrations_report.tex
 % Or: xelatex django_migrations_report.tex (twice).
+% Overleaf: Menu -> Settings -> Compiler -> XeLaTeX (pdfLaTeX will not work).
 \documentclass[11pt,a4paper]{article}
 \usepackage{fontspec}
-\setmainfont{Times New Roman}
-\setsansfont{Arial}
-\setmonofont{Courier New}
+% First installed font wins: Windows/macOS, then Liberation (Linux), then PT (TeX Live, Overleaf).
+\newcommand{\pickfont}[4]{\IfFontExistsTF{#2}{#1{#2}}{\IfFontExistsTF{#3}{#1{#3}}{#1{#4}}}}
+\pickfont{\setmainfont}{Times New Roman}{Liberation Serif}{PT Serif}
+\pickfont{\setsansfont}{Arial}{Liberation Sans}{PT Sans}
+\pickfont{\setmonofont}{Courier New}{Liberation Mono}{PT Mono}
 \usepackage{polyglossia}
 \setdefaultlanguage{russian}
-\newfontfamily\cyrillicfonttt{Courier New}
+\pickfont{\newfontfamily\cyrillicfonttt}{Courier New}{Liberation Mono}{PT Mono}
 \setotherlanguage{english}
 \usepackage[margin=21mm,headheight=15pt]{geometry}
-\usepackage{xcolor,fancyhdr,enumitem,booktabs,tabularx,longtable}
+\usepackage{xcolor,fancyhdr}
 \usepackage{fvextra}
 \usepackage{titlesec}
 \usepackage{needspace}
@@ -33,7 +36,6 @@
 \titlespacing*{\section}{0pt}{8pt}{9pt}
 \DefineVerbatimEnvironment{code}{Verbatim}{fontsize=\footnotesize,breaklines=true,breakanywhere=true,frame=single,rulecolor=\color{muted},framesep=5pt,baselinestretch=1}
 \newcommand{\speaker}[1]{\Needspace{5\baselineskip}\par\medskip{\sffamily\bfseries\color{accent}Спикер #1}\par\smallskip}
-\newcommand{\cue}[1]{{\small\itshape\color{muted}[#1]}\par}
 \newcommand{\src}[1]{{\small\color{muted}Источники: #1.}}
 \newcommand{\parthead}[1]{\clearpage\section{#1}}
 
@@ -59,7 +61,7 @@ python manage.py migrate
 \speaker{2}
 До запуска нужно прочитать созданный файл. В первую очередь проверяют удаление полей, переименования и новые правила для данных. Например, Django может принять сложное переименование за удаление старого объекта и создание нового. Команда выполнится без ошибки, но прежние данные могут быть потеряны.
 
-Файлы миграций создают и проверяют при разработке, а затем доставляют на рабочий сервер вместе с приложением. На каждом сервере должен выполняться один и тот же проверенный набор. Если два разработчика независимо изменили одну модель, после объединения кода нужно разобраться, в каком порядке выполнять оба изменения. Переименование файла само по себе этот вопрос не решает.
+Файлы миграций создают и проверяют при разработке, а затем доставляют на рабочий сервер вместе с приложением. На каждом сервере должен выполняться один и тот же проверенный набор. Если два разработчика независимо изменили одну модель, после объединения кода нужно разобраться, в каком порядке выполнять оба изменения. Переименование файла само по себе этот вопрос не решает; \texttt{makemigrations --merge} создаёт объединяющую миграцию, но её порядок операций всё равно проверяют вручную.
 
 Команды выше позволяют увидеть SQL, порядок действий и уже применённые миграции. Но план не показывает, сколько всё займёт и будет ли приложение ждать доступа к таблице. Поэтому проверяют два сценария: создание базы с нуля и обновление базы, где уже есть данные.
 
@@ -168,7 +170,7 @@ def fill(apps, schema_editor):
 
 class Migration(migrations.Migration):
     atomic = False
-    dependencies = [("orders", "0002_external_id")]
+    dependencies = [("orders", "0004_external_id")]
     operations = [migrations.RunPython(fill)]
 \end{code}
 \speaker{2}
@@ -186,7 +188,7 @@ from django.contrib.postgres.operations import AddIndexConcurrently
 
 class Migration(migrations.Migration):
     atomic = False
-    dependencies = [("orders", "0003_fill_external_id")]
+    dependencies = [("orders", "0005_fill_external_id")]
     operations = [AddIndexConcurrently(
         model_name="order",
         index=models.Index(
@@ -196,18 +198,18 @@ class Migration(migrations.Migration):
 \end{code}
 Этот индекс ускоряет поиск, но не запрещает повторяющиеся UUID. Конкурентное построение тоже создаёт нагрузку и иногда ждёт другие транзакции. После ошибки может остаться невалидный индекс: объект существует, но для поиска ещё не пригоден. Просто пропустить его создание через \texttt{IF NOT EXISTS} недостаточно. Нужно проверить состояние и выбрать описанный в документации способ повторного построения.
 \speaker{2}
-Ограничение CHECK проверяет условие для строки, а внешний ключ --- наличие связанной записи. Для них PostgreSQL позволяет разделить работу: \texttt{NOT VALID} сразу проверяет новые записи, но откладывает проверку старых. Позже \texttt{VALIDATE CONSTRAINT} проверяет накопленные данные. В Django это \texttt{AddConstraintNotValid} и \texttt{ValidateConstraint} в отдельных миграциях. Для UNIQUE и NOT NULL флаг \texttt{NOT VALID} так не применяется.
+Ограничение CHECK проверяет условие для строки, а внешний ключ --- наличие связанной записи. Для них PostgreSQL позволяет разделить работу: \texttt{NOT VALID} сразу проверяет новые записи, но откладывает проверку старых. Позже \texttt{VALIDATE CONSTRAINT} проверяет накопленные данные. В Django это \texttt{AddConstraintNotValid} и \texttt{ValidateConstraint} в отдельных миграциях, но только для CHECK; внешний ключ так добавляют через \texttt{RunSQL}. Для UNIQUE \texttt{NOT VALID} не применяется, для NOT NULL --- только с PostgreSQL 18.
 
-Чтобы сделать поле обязательным, можно сначала проверить CHECK на отсутствие NULL, затем изменить поле через \texttt{AlterField}. PostgreSQL 17 способен использовать уже проверенный CHECK и не читать таблицу повторно для этой проверки. Но сама смена свойства поля всё ещё требует блокировки. Django тоже должен знать, что поле теперь имеет \texttt{null=False}.
+Чтобы сделать поле обязательным, можно сначала проверить CHECK на отсутствие NULL, затем изменить поле через \texttt{AlterField}. PostgreSQL использует уже проверенный CHECK и не читает таблицу повторно, но смена свойства поля всё ещё требует блокировки. Затем вспомогательный CHECK можно удалить.
 
-Для большой обычной таблицы уникальность можно вводить в два шага: сначала построить уникальный индекс конкурентно, затем сделать его ограничением UNIQUE. Пример ниже относится к таблице без разделения на секции:
+Для большой обычной таблицы уникальность можно вводить в два шага: сначала построить уникальный индекс конкурентно, затем сделать его ограничением UNIQUE. Пример для таблицы без секций:
 \begin{code}
 CREATE UNIQUE INDEX CONCURRENTLY order_ext_unique_idx
     ON orders_order (external_id);
 ALTER TABLE orders_order ADD CONSTRAINT order_ext_unique
     UNIQUE USING INDEX order_ext_unique_idx;
 \end{code}
-Это SQL-пример, а не готовая Django-миграция: нужно также описать изменение для Django и порядок отмены. Присоединённый индекс становится частью ограничения. Ожидание блокировки ограничивают параметром \texttt{lock\_timeout}, а всю длительность команды --- \texttt{statement\_timeout}. Настройки задают в подключении, которое выполняет миграцию; другое окно с SQL их не передаст.
+Это SQL-пример, а не готовая Django-миграция: нужно также описать изменение для Django и порядок отмены. Ожидание блокировки ограничивают параметром \texttt{lock\_timeout}, а всю длительность команды --- \texttt{statement\_timeout}. Настройки задают в подключении, которое выполняет миграцию; другое окно с SQL их не передаст.
 \src{\cite{pgoperations,pgindex,pgalter,pglocks,pgtimeouts}}
 
 \parthead{Rollback, исправление вперёд и восстановление}
@@ -216,9 +218,9 @@ ALTER TABLE orders_order ADD CONSTRAINT order_ext_unique
 
 При отмене миграций Django выполняет обратные действия до указанного файла. Для \texttt{RunPython} эти действия нужно написать в \texttt{reverse\_code}; без него операция не отменяется. \texttt{RunPython.\allowbreak noop} позволяет ничего не делать при движении назад. Но это только пропуск действия, а не восстановление прежних значений.
 \begin{code}
-python manage.py migrate orders 0002 --plan
+python manage.py migrate orders 0005 --plan
 # Сначала проверить план и все обратные операции:
-python manage.py migrate orders 0002
+python manage.py migrate orders 0005
 \end{code}
 Если миграция удалила столбец, обратная операция может создать его снова. Удалённые значения при этом не вернутся. Для восстановления нужны заранее сохранённые данные или резервная копия. Поэтому перед удалением поля определяют, сколько времени его ещё хранить и до какого момента возможен быстрый возврат старой версии.
 
@@ -242,7 +244,7 @@ python manage.py loaddata orders.json
 \end{code}
 При повторной загрузке значения существующих объектов могут замениться данными из файла. Если администратор уже отредактировал справочник, его изменения можно случайно потерять. Для данных, обязательных при установке приложения, Django предлагает миграцию данных. В ней можно явно указать: создать запись, только если её нет, или обновить только выбранные поля.
 
-При загрузке фикстуры пользовательский метод \texttt{save} не вызывается обычным способом, а обработчики сигналов получают признак \texttt{raw}. Поэтому нельзя рассчитывать, что привычная логика сохранения всё дополнит автоматически. Natural keys позволяют указывать связи через устойчивые значения, например код страны, вместо числового id. Их поддержку нужно описать в моделях. Фикстуры всё равно не заменяют полноценную резервную копию базы.
+При загрузке фикстуры объекты сохраняются как есть: переопределённый метод \texttt{save} модели не вызывается, а обработчики сигналов получают признак \texttt{raw}. Поэтому нельзя рассчитывать, что привычная логика сохранения всё дополнит автоматически. Natural keys позволяют указывать связи через устойчивые значения, например код страны, вместо числового id. Их поддержку нужно описать в моделях. Фикстуры всё равно не заменяют полноценную резервную копию базы.
 \speaker{2}
 Alembic --- инструмент миграций для проектов на SQLAlchemy. Его автогенерация сравнивает описание таблиц в Python с реальной базой и предлагает файл изменений --- ревизию. Django сравнивает модели с собственной историей миграций. Поэтому Alembic не является автоматически подключаемой заменой \texttt{migrate} и не понимает зависимости файлов Django.
 \begin{code}
